@@ -5,6 +5,7 @@ import sys
 import datetime
 from bisect import bisect
 from collections import OrderedDict
+import pysam
 
 
 def time_now():  # return time
@@ -12,28 +13,26 @@ def time_now():  # return time
     return curr_time.strftime("%c")
 
 
-def wig_to_bp_coverage(extracted_coverage, extracted_3UTR_region, strand_info):
-    bp_coverage = np.zeros(extracted_3UTR_region[-1] - extracted_3UTR_region[0])
-    relative_start = extracted_3UTR_region[0]
-    for i in range(len(extracted_coverage)):
-        start = extracted_3UTR_region[i] - relative_start
-        curr_region_end = extracted_3UTR_region[i + 1] - relative_start
-        bp_coverage[start:curr_region_end] = extracted_coverage[i]
-    if strand_info == '-':
-        bp_coverage = bp_coverage[::-1]
-
-    return bp_coverage
-
-
-def create_output_dir(output_directory):
-    d = os.path.dirname(output_directory)
-    if not os.path.exists(d):
-        os.makedirs(d)
-    temp_dir = os.path.join(d, '/tmp/')
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
-    return temp_dir
-
+def get_bp_coverage(alignment, utr, is_reverse=False):
+    """
+    Use pysam pileup method on indexed bam alignment files to retrieve strand-specific coverage in numpy array format.
+    :param alignment:
+    :param utr:
+    :param is_reverse:
+    :return:
+    """
+    """
+    :param alignment:
+    :param utr:
+    :param is_reverse:
+    :return:
+    """
+    pos_n = {pu.pos:sum([ int(pur.alignment.is_reverse == is_reverse) for pur in pu.pileups ]) for pu in alignment.pileup(*utr)}
+    pus = np.array([pos_n.get(i, 0) for i in xrange(utr[1], utr[2])])
+    if not is_reverse:
+        return pus
+    else:
+        return pus[::-1]
 
 def parse_args():
     """
@@ -45,82 +44,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Determines the usage of proximal polyA usage')
     parser.add_argument("-c", "--control_alignments", nargs="+", required=True, type=file,
                         help="Alignment files in BAM format from control condition")
-    parser.add_argument("-t", "--treatment_alignments", nargs="+", required=True, type=file,
+    parser.add_argument("-t", "--treatment_alignments", nargs="+", required=True,
                         help="Alignment files in BAM format from treatment condition")
-    parser.add_argument("-u", "--utr_bed_file", required=True, type=file,
+    parser.add_argument("-u", "--utr_bed_file", required=True,
                         help="Bed file describing longest 3UTR positions")
     parser.add_argument("-o", "--output_file", required=True, type=argparse.FileType('w'),
                         help="file containing output")
     return parser.parse_args()
-
-
-def process_alignments(All_Wig_files, utr_dict):
-    """
-    Takes in an iterable and produces a 3\'UTR coverage dict and a numpy array of total sample depth.
-    :param All_Wig_files:
-    :param utr_dict:
-    :return:
-    """
-    """
-    :param All_Wig_files:
-    :param utr_dict:
-    :return:
-    """
-
-    def make_coverage_dict(wig_file):
-        """Get coverage_dict for wig_file".
-        covarage dict structure is:
-        {"chr1": [ [position], [count] ]}
-        Depth is total covered based (WEIRD!)"""
-        coverage_dict = {}
-        depth = 0
-        for line in wig_file:
-            if '#' not in line and line[0:3] == 'chr':
-                fields = line.strip('\n').split('\t')
-                chrom = fields[0]
-                start = int(fields[1])
-                end = int(fields[2])
-                count = int(fields[-1])
-                depth += int(fields[-1]) * (end - start)
-                if chrom not in coverage_dict:
-                    coverage_dict[chrom] = [[0], [0]]
-                if start > coverage_dict[chrom][0][-1]:  # No strand info in wig files: buhuuuu!
-                    coverage_dict[chrom][0].append(start)
-                    coverage_dict[chrom][1].append(0)
-                coverage_dict[chrom][0].append(end)
-                coverage_dict[chrom][1].append(count)
-        coverage_dict[chrom][1].append(0)
-        return coverage_dict, depth
-
-    def get_utr_coverage(coverage_dict, utr_dict, coverage_dict_all_samples):
-        for curr_3UTR_event_id in utr_dict:
-            curr_3UTR_structure = utr_dict[curr_3UTR_event_id]
-            curr_chr = curr_3UTR_structure[0]
-            if curr_chr in coverage_dict:
-                curr_chr_coverage = coverage_dict[curr_chr]
-                start = curr_3UTR_structure[1]
-                end = curr_3UTR_structure[2]
-                left_region_index = bisect(curr_chr_coverage[0], start)
-                right_region_index = bisect(curr_chr_coverage[0], end)
-
-                extracted_coverage = curr_chr_coverage[1][left_region_index:right_region_index + 1]
-                extracted_3UTR_region = curr_chr_coverage[0][left_region_index:right_region_index]
-                extracted_3UTR_region.insert(0, start)
-                extracted_3UTR_region.append(end)
-                if curr_3UTR_event_id not in coverage_dict_all_samples:
-                    coverage_dict_all_samples[curr_3UTR_event_id] = []
-                coverage_dict_all_samples[curr_3UTR_event_id].append(
-                    [extracted_coverage, extracted_3UTR_region])
-        return coverage_dict_all_samples
-
-    ##Load coverage for all samples
-    depth_all_samples = []
-    coverage_dict_all_samples = {}
-    for wig_file in All_Wig_files:
-        coverage_dict, depth = make_coverage_dict(wig_file)
-        depth_all_samples.append(depth)
-        coverage_dict_all_samples = get_utr_coverage(coverage_dict, utr_dict, coverage_dict_all_samples)
-    return coverage_dict_all_samples, np.array(depth_all_samples)
 
 
 class UtrFinder():
@@ -129,8 +59,8 @@ class UtrFinder():
     '''
 
     def __init__(self, args):
-        self.control_alignments = args.control_alignments
-        self.treatment_alignments = args.treatment_alignments
+        self.control_alignments = [pysam.AligmentFile(file) for file in args.control_alignments]
+        self.treatment_alignments = [pysam.AligmentFile(file) for file in  args.treatment_alignments]
         self.utr = args.utr_bed_file
         self.result_file = args.output_file
         self.all_alignments = self.control_alignments + self.treatment_alignments
@@ -173,13 +103,16 @@ class UtrFinder():
         for utr, structure in utr_dict.iteritems():
             start = structure[1]
             end = structure[2]
-            strand = structure[-2]
+            if structure[-2] == "+"
+                is_reverse = False
+            else:
+                is_reverse = True
             UTR_pos = structure[-1]
             if utr in coverage_dict_all_samples:
                 coverage_wig = coverage_dict_all_samples[utr]
                 utr_bp_coverage = []
-                for wig in coverage_wig:
-                    bp_coverage = wig_to_bp_coverage(wig[0], wig[1], strand)
+                for bam in self.all_alignments:
+                    bp_coverage = get_bp_coverage(bam, utr, is_reverse)
                     utr_bp_coverage.append(bp_coverage)
 
                 mse, breakpoint, abundances = estimate_coverage_extended_utr(
@@ -233,7 +166,7 @@ def write_header():
 
 
 def estimate_coverage_extended_utr(All_Samples_curr_3UTR_coverages, UTR_start,
-                                   UTR_end, curr_strand, weight_for_second_coverage):
+                                   UTR_end, is_reverse, weight_for_second_coverage):
     '''For UTR-APA new
        Load one chromosome by chromosome
        Just for TCGA data analysis. So no peak evenness checking
@@ -258,7 +191,7 @@ def estimate_coverage_extended_utr(All_Samples_curr_3UTR_coverages, UTR_start,
         Region_first_100_coverage_all_samples.append(curr_first_100_coverage)
     if sum(np.array(
             Region_first_100_coverage_all_samples) >= coverage_threshold) >= num_samples and UTR_end - UTR_start >= 150:
-        if curr_strand == "+":
+        if not is_reverse:
             search_region = range(UTR_start + search_point_start, UTR_end - search_point_end + 1)
         else:
             search_region = range(UTR_end - search_point_start, UTR_start + search_point_end - 1, -1)
