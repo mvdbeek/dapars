@@ -30,12 +30,14 @@ def get_longest_utr(utr_dict):
     gtf = []
     for gene_id, values  in utr_dict.iteritems():
         if len(values) == 1:
+            values[0]["start"] = str(values[0]["start"])
+            values[0]["end"] = str(values[0]["end"])
             gtf.append( "\t".join( values[0].values() ) )
         else:
             start = min( [fields["start"] for fields in values] )
-            stop = max( [fields["stop"] for fields in values] )
+            end = max( [fields["end"] for fields in values] )
             values[0]["start"] = str(start)
-            values[0]["stop"] = str(stop)
+            values[0]["end"] = str(end)
             gtf.append( "\t".join( values[0].values() ) )
     return gtf
 

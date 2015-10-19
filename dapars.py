@@ -1,7 +1,8 @@
 import argparse
+import os
 import numpy as np
 import pysam
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 import filter_utr
 
 
@@ -48,10 +49,12 @@ class UtrFinder():
         self.gtf_fields = filter_utr.get_gtf_fields()
         self.result_file = args.output_file
         self.all_alignments = self.control_alignments + self.treatment_alignments
+        self.num_samples = len(self.all_alignments)
         self.utr_dict = self.get_utr_dict(0.2)
         self.utr_coverages = self.get_utr_coverage()
         self.coverage_weights = self.get_coverage_weights()
         result_d = self.calculate_apa_ratios()
+        test = result_d
 
     def get_available_chromosome(self):
         return self.control_alignments[0].references
@@ -133,15 +136,26 @@ class UtrFinder():
         coverage_weights = coverages / np.mean(coverages)  # TODO: proabably median is better suited?
         return coverage_weights
 
+    def get_result_tuple(self):
+        static_desc = ["chr", "start", "end", "strand", "gene", "breakpoint", "control_mean_percent", "treatment_mean_percent" ]
+        samples_desc = []
+        for statistic in ["coverage_long", "coverage_short", "percent_long"]:
+            for i, sample in enumerate(self.control_alignments):
+                samples_desc.append("control_{i}_{statistic}".format(i=i+1, statistic = statistic))
+            for i, sample in enumerate(self.treatment_alignments):
+                samples_desc.append("treatment_{i}_{statistic}".format(i=i+1, statistic = statistic))
+        return namedtuple("result", static_desc + samples_desc, rename=True)
+
+
+
     def calculate_apa_ratios(self):
-        num_samples  = len(self.all_alignments)  # TODO: remove all references to number of samples, filtering etc. and put in separate function
         result_d = OrderedDict()
         for utr, utr_d in self.utr_dict.iteritems():
+            result_tuple = self.get_result_tuple()
             if utr_d["strand"] == "+":
                 is_reverse = False
             else:
                 is_reverse = True
-            original_utr = (utr_d["chr"], utr_d["start"], utr_d["end"])
             utr_coverage = self.utr_coverages[utr]
             mse, breakpoint, abundances = estimate_coverage_extended_utr(utr_coverage,
                                                                          utr_d["new_start"],
@@ -149,22 +163,20 @@ class UtrFinder():
                                                                          is_reverse,
                                                                          self.coverage_weights)
             if not str(mse) == "Na":
-                long_exp_all = np.array(abundances[0])
-                short_exp_all = np.array(abundances[1])
-                num_non_zero = sum((long_exp_all + short_exp_all) > 0)  # TODO: This introduces bias
-                if num_non_zero == num_samples:
-                    percentages_long = []
-                    result_d[utr] = [mse, breakpoint, original_utr]
-                    for i in range(num_samples):
-                        ratio = float(abundances[0][i]) / (
-                            float(abundances[0][i]) + float(abundances[1][i]))  # long 3'UTR percentage
-                        percentages_long.append(ratio)
-                        result_d[utr].extend((abundances[0][i], abundances[1][i], ratio))
-                    Group1_IR = percentages_long[:len(self.control_alignments)]
-                    Group2_IR = percentages_long[len(self.control_alignments):]
-                    inclusion_ratio_Group_diff = np.mean(np.array(Group1_IR)) - np.mean(np.array(Group2_IR))
-
-                    result_d[utr].extend([inclusion_ratio_Group_diff])
+                long_coverage_vector = abundances[0]
+                short_coverage_vector = abundances[1]
+                num_non_zero = sum((np.array(long_coverage_vector) + np.array(short_coverage_vector)) > 0)  # TODO: This introduces bias
+                if num_non_zero == self.num_samples:
+                    percentage_long = []
+                    for i in range(self.num_samples):
+                        ratio = float(long_coverage_vector[i]) / (long_coverage_vector[i] + short_coverage_vector[i])  # long 3'UTR percentage
+                        percentage_long.append(ratio)
+                    control_mean_percent = np.mean(np.array(percentage_long[:len(self.control_alignments)]))
+                    treatment_mean_percent = np.mean(np.array(percentage_long[len(self.control_alignments):]))
+                    res = result_tuple(utr_d["chr"], utr_d["start"], utr_d["end"], utr_d["strand"],
+                                       utr, breakpoint, control_mean_percent, treatment_mean_percent,
+                                       *zip(percentage_long, long_coverage_vector, short_coverage_vector))
+                    result_d[utr] = res
         return result_d
 
 
@@ -185,78 +197,72 @@ def write_header():
     self.result_file.writelines('\t'.join(first_line) + '\n')
 
 
-def estimate_coverage_extended_utr(All_Samples_curr_3UTR_coverages, UTR_start,
-                                   UTR_end, is_reverse, weight_for_second_coverage):
-    '''For UTR-APA new
-       Load one chromosome by chromosome
-       Just for TCGA data analysis. So no peak evenness checking
-       Jan-17-2013
-       2-28-2013
-    '''
-    coverage_threshold = 20
+def estimate_coverage_extended_utr(utr_coverage, UTR_start,
+                                   UTR_end, is_reverse, coverage_weigths):
+    """
+    We are searching for a breakpoint in coverage?!
+    utr_coverage is a list with items corresponding to numpy arrays of coverage for a sample.
+    """
+    coverage_threshold = 15
     search_point_start = 200
-    search_point_end = int(abs((UTR_end - UTR_start)) * 0.1)
-    num_samples = len(All_Samples_curr_3UTR_coverages)
-    ##read coverage
-    Region_Coverages = []
-    Region_mean_Coverages = []
-    Region_first_100_coverage_all_samples = []
-    for i in range(num_samples):
-        curr_Region_Coverage_raw = All_Samples_curr_3UTR_coverages[i]  ##strand is reversed in load
-        curr_Region_Coverage = curr_Region_Coverage_raw / weight_for_second_coverage[i]
-        Region_mean_Coverages.append(np.mean(curr_Region_Coverage_raw))
-        Region_Coverages.append(curr_Region_Coverage)
-        curr_first_100_coverage = np.mean(curr_Region_Coverage_raw[0:99])
-        Region_first_100_coverage_all_samples.append(curr_first_100_coverage)
-    if sum(np.array(
-            Region_first_100_coverage_all_samples) >= coverage_threshold) >= num_samples and UTR_end - UTR_start >= 150:
+    search_point_end = int(abs((UTR_end - UTR_start)) * 0.1)  # TODO: This is 10% of total UTR end. Why?
+    num_samples = len(utr_coverage)
+    ##read coverage filtering
+    normalized_utr_coverage = [coverage/ coverage_weigths[i] for i, coverage in enumerate( utr_coverage )]
+    start_coverage = [np.mean(coverage[0:99]) for coverage in utr_coverage]  # filters threshold on mean coverage over first 100 nt
+    is_above_threshold = sum(np.array(start_coverage) >= coverage_threshold) >= num_samples  # This filters on the raw threshold. Why?
+    is_above_length = UTR_end - UTR_start >= 150
+    if (is_above_threshold) and (is_above_length):
         if not is_reverse:
             search_region = range(UTR_start + search_point_start, UTR_end - search_point_end + 1)
         else:
             search_region = range(UTR_end - search_point_start, UTR_start + search_point_end - 1, -1)
         search_start = search_point_start
         search_end = UTR_end - UTR_start - search_point_end
-        Mean_squared_error_list = []
+        mse_list = []
         Estimated_3UTR_abundance_list = []
         for curr_point in range(search_start, search_end + 1):
             curr_search_point = curr_point
             All_samples_result = [[], [], []]
-            for curr_sample_region_coverage in Region_Coverages:
+            for curr_sample_region_coverage in normalized_utr_coverage:
                 Mean_Squared_error, Long_UTR_abun, Short_UTR_abun = estimate_abundance(curr_sample_region_coverage,
                                                                                        curr_search_point)
                 All_samples_result[0].append(Mean_Squared_error)
                 All_samples_result[1].append(Long_UTR_abun)
                 All_samples_result[2].append(Short_UTR_abun)
             Mean_Squared_error = np.mean(np.array(All_samples_result[0]))
-            Mean_squared_error_list.append(Mean_Squared_error)
+            mse_list.append(Mean_Squared_error)
             Estimated_3UTR_abundance_list.append([All_samples_result[1], All_samples_result[2]])
-        if len(Mean_squared_error_list) > 0:
-            min_ele_index = Mean_squared_error_list.index(min(Mean_squared_error_list))
-            select_mean_squared_error = Mean_squared_error_list[min_ele_index]
+        if len(mse_list) > 0:
+            min_ele_index = mse_list.index(min(mse_list))
+            select_mean_squared_error = mse_list[min_ele_index]
             UTR_abundances = Estimated_3UTR_abundance_list[min_ele_index]
-            selcted_break_point = search_region[min_ele_index]
+            selected_break_point = search_region[min_ele_index]
         else:
             select_mean_squared_error = 'Na'
             UTR_abundances = 'Na'
-            selcted_break_point = 'Na'
+            selected_break_point = 'Na'
     else:
         select_mean_squared_error = 'Na'
         UTR_abundances = 'Na'
-        selcted_break_point = 'Na'
+        selected_break_point = 'Na'
 
-    return select_mean_squared_error, selcted_break_point, UTR_abundances
+    return select_mean_squared_error, selected_break_point, UTR_abundances
 
 
-def estimate_abundance(Region_Coverage, break_point):
-    Long_UTR_abun = np.mean(Region_Coverage[break_point:])
-    Short_UTR_abun = np.mean(Region_Coverage[0:break_point] - Long_UTR_abun)
-    if Short_UTR_abun < 0:
-        Short_UTR_abun = 0
-    Coverage_diff = Region_Coverage[0:break_point] - Long_UTR_abun - Short_UTR_abun
-    Coverage_diff = np.append(Coverage_diff, Region_Coverage[break_point:] - Long_UTR_abun)
-    mse = np.mean(Coverage_diff ** 2)
+def estimate_abundance(Region_Coverage, breakpoint):
+    """
+    get abundance of long utr vs short utr with breakpoint specifying the position of long and short utr.
+    """
+    long_utr_vector = Region_Coverage[breakpoint:]
+    short_utr_vector = Region_Coverage[0:breakpoint]
+    mean_long_utr = np.mean(long_utr_vector)
+    mean_short_utr = np.mean(Region_Coverage[0:breakpoint])
+    square_mean_centered_short_utr_vector = (short_utr_vector - mean_short_utr) **2
+    square_mean_centered_long_utr_vector = (long_utr_vector - mean_long_utr) ** 2
+    mse = np.mean(np.append(square_mean_centered_short_utr_vector, square_mean_centered_long_utr_vector))
 
-    return mse, Long_UTR_abun, Short_UTR_abun
+    return mse, mean_long_utr, mean_short_utr
 
 
 if __name__ == '__main__':
