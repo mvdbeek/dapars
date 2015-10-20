@@ -1,14 +1,16 @@
 import argparse
 import os
+import csv
 import numpy as np
-import pysam
 from collections import OrderedDict, namedtuple
 import filter_utr
+import subprocess
 
 
 def get_bp_coverage(alignment, chr, start, end, is_reverse=False):
     """
     Use pysam pileup method on indexed bam alignment files to retrieve strand-specific coverage in numpy array format.
+    This is way too slow, unfortunately.
     """
     pos_n = {pu.pos:sum([ int(pur.alignment.is_reverse == is_reverse) for pur in pu.pileups ]) for pu in alignment.pileup(chr, start, end)}
     pus = np.array([pos_n.get(i, 0) for i in xrange(start, end)])
@@ -42,22 +44,67 @@ class UtrFinder():
     """
 
     def __init__(self, args):
-        self.control_alignments = [pysam.AlignmentFile(file) for file in args.control_alignments]
-        self.treatment_alignments = [pysam.AlignmentFile(file) for file in args.treatment_alignments]
-        self.available_chromosomes = self.get_available_chromosome()
+        self.control_alignments = [file for file in args.control_alignments]
+        self.treatment_alignments = [file for file in args.treatment_alignments]
+        #self.available_chromosomes = self.get_available_chromosome()
         self.utr = args.utr_bed_file
         self.gtf_fields = filter_utr.get_gtf_fields()
         self.result_file = args.output_file
         self.all_alignments = self.control_alignments + self.treatment_alignments
+        self.alignment_names = { file: os.path.basename(file) for file in self.all_alignments }
         self.num_samples = len(self.all_alignments)
         self.utr_dict = self.get_utr_dict(0.2)
-        self.utr_coverages = self.get_utr_coverage()
+        self.dump_utr_dict_to_bedfile()
+        print "done getting utr_dict"
+        self.coverage_files = self.run_bedtools_coverage()
+        print "produced coverage files"
+        self.utr_coverages = self.read_coverage_result()
+        print "got coverage_dict"
         self.coverage_weights = self.get_coverage_weights()
-        result_d = self.calculate_apa_ratios()
-        test = result_d
+        self.result_tuple = self.get_result_tuple()
+        self.result_d = self.calculate_apa_ratios()
+        self.write_results()
 
-    def get_available_chromosome(self):
-        return self.control_alignments[0].references
+
+    def dump_utr_dict_to_bedfile(self):
+        w = csv.writer(open("tmp_bedfile.bed", "w"), delimiter="\t")
+        for gene, utr in self.utr_dict.iteritems():
+            w.writerow([utr["chr"], utr["new_start"]-1, utr["new_end"], gene, ".", utr["strand"]])
+
+    def run_bedtools_coverage(self):
+        """
+        Use bedtools coverage to generate pileup data for all alignment files for the regions specified in utr_dict.
+        """
+        coverage_files = []
+        for alignment_file in self.all_alignments:
+            cmd = "sort -k1,1 -k2,2n tmp_bedfile.bed | "
+            cmd = cmd + "/usr/bin/bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
+                        " cut -f 4,7,8 > coverage_file_{alignment_name}".format(
+                alignment_file = alignment_file, alignment_name= self.alignment_names[alignment_file] )
+            print cmd
+            subprocess.call([cmd], shell=True)
+            coverage_files.append("gene_position_coverage_{alignment_name}".format(
+                alignment_name = self.alignment_names[alignment_file]))
+        return coverage_files
+
+    def read_coverage_result(self):
+        """
+        Read coverages back in and store as dictionary of numpy arrays
+        """
+        coverage_dict = { gene: { file: np.zeros(utr_d["new_end"]+1-utr_d["new_start"]) for file in self.all_alignments } for gene, utr_d in self.utr_dict.iteritems() }
+        for alignment_name in self.alignment_names.itervalues():
+            with open("coverage_file_{alignment_name}".format(alignment_name = alignment_name)) as coverage_file:
+                for line in coverage_file:
+                    gene, position, coverage= line.strip().split("\t")
+                    coverage_dict[gene][alignment_name][int(position)-1] = coverage
+        for utr_d in self.utr_dict.itervalues():
+            if utr_d["strand"] == "-":
+                for alignment_name in self.alignment_names.values():
+                    coverage_dict[gene][alignment_name] = coverage_dict[gene][alignment_name][::-1]
+        return coverage_dict
+
+#    def get_available_chromosome(self):
+#        return self.control_alignments[0].references
 
     def get_utr_dict(self, shift):
         utr_dict = OrderedDict()
@@ -75,32 +122,6 @@ class UtrFinder():
                     utr_d["new_start"] = utr_d["start"] + end_shift
                 if utr_d["new_start"] + 50 < utr_d["new_end"]:
                     utr_dict[gene] = utr_d
-        return utr_dict
-
-    def get_utr_dict_from_bed(self, shift):
-        """Iterate over bed file. Shift 3' by param shift (default 20% of UTR length)
-        If the shifted UTR is more than 50 nucleotides apart create a dictionary entry.
-        dictionary structure is:
-        {"gene":["chr1", 101, 221, (chr1, 100, 200)  ]}
-        """
-        utr_dict = OrderedDict()
-        for line in self.utr:
-            fields = line.strip('\n').split('\t')
-            chr = fields[0]
-            start = int(fields[1])
-            end = int(fields[2])
-            gene = fields[3]
-            curr_strand = fields[5]
-            UTR_pos = (chr, start, end)
-            end_shift = int(round(abs(start - end) * shift))  # Shift 3' end by 20%
-            if curr_strand == '+':
-                end = end - end_shift
-            else:
-                start = start + end_shift
-            start = start
-            end = int(end)
-            if start + 50 < end:
-                utr_dict[gene] = [chr, start, end, fields[-1], UTR_pos]
         return utr_dict
 
     def get_utr_coverage(self):
@@ -125,12 +146,13 @@ class UtrFinder():
     def get_coverage_weights(self):
         """
         Return weights for normalizing coverage.
+        utr_coverage is still confusing.
         """
         coverage_per_alignment = []
-        for utr in self.utr_coverages.itervalues():
+        for utr in self.utr_coverages.itervalues():  # TODO: be smarter about this.
             utr_coverage = []
-            for pileup in utr:
-                utr_coverage.append(np.sum(pileup))
+            for vector in utr.itervalues():
+                utr_coverage.append(np.sum(vector))
             coverage_per_alignment.append(utr_coverage)
         coverages = np.array([ sum(x) for x in zip(*coverage_per_alignment) ])
         coverage_weights = coverages / np.mean(coverages)  # TODO: proabably median is better suited?
@@ -146,12 +168,9 @@ class UtrFinder():
                 samples_desc.append("treatment_{i}_{statistic}".format(i=i+1, statistic = statistic))
         return namedtuple("result", static_desc + samples_desc, rename=True)
 
-
-
     def calculate_apa_ratios(self):
         result_d = OrderedDict()
         for utr, utr_d in self.utr_dict.iteritems():
-            result_tuple = self.get_result_tuple()
             if utr_d["strand"] == "+":
                 is_reverse = False
             else:
@@ -173,28 +192,18 @@ class UtrFinder():
                         percentage_long.append(ratio)
                     control_mean_percent = np.mean(np.array(percentage_long[:len(self.control_alignments)]))
                     treatment_mean_percent = np.mean(np.array(percentage_long[len(self.control_alignments):]))
-                    res = result_tuple(utr_d["chr"], utr_d["start"], utr_d["end"], utr_d["strand"],
+                    stats = zip(long_coverage_vector, short_coverage_vector, percentage_long)
+                    stats = [item for sublist in stats for item in sublist]
+                    res = self.result_tuple(utr_d["chr"], utr_d["start"], utr_d["end"], utr_d["strand"],
                                        utr, breakpoint, control_mean_percent, treatment_mean_percent,
-                                       *zip(percentage_long, long_coverage_vector, short_coverage_vector))
+                                       *stats)
                     result_d[utr] = res
         return result_d
 
-
-def write_header():
-    ##Write the first line
-    first_line = ['Gene', 'fit_value', 'Predicted_Proximal_APA', 'Loci']
-    for i in range(num_group_1):
-        curr_long_exp = 'A_%s_long_exp' % str(i + 1)
-        curr_short_exp = 'A_%s_short_exp' % str(i + 1)
-        curr_ratio = 'A_%s_PDUI' % str(i + 1)
-        first_line.extend([curr_long_exp, curr_short_exp, curr_ratio])
-    for i in range(num_samples - num_group_1):
-        curr_long_exp = 'B_%s_long_exp' % str(i + 1)
-        curr_short_exp = 'B_%s_short_exp' % str(i + 1)
-        curr_ratio = 'B_%s_PDUI' % str(i + 1)
-        first_line.extend([curr_long_exp, curr_short_exp, curr_ratio])
-    first_line.append('PDUI_Group_diff')
-    self.result_file.writelines('\t'.join(first_line) + '\n')
+    def write_results(self):
+        w = csv.writer(self.result_file, delimiter='\t')
+        w.writerow((self.result_tuple._fields))    # field header
+        w.writerows( self.result_d.values())
 
 
 def estimate_coverage_extended_utr(utr_coverage, UTR_start,
@@ -208,8 +217,8 @@ def estimate_coverage_extended_utr(utr_coverage, UTR_start,
     search_point_end = int(abs((UTR_end - UTR_start)) * 0.1)  # TODO: This is 10% of total UTR end. Why?
     num_samples = len(utr_coverage)
     ##read coverage filtering
-    normalized_utr_coverage = [coverage/ coverage_weigths[i] for i, coverage in enumerate( utr_coverage )]
-    start_coverage = [np.mean(coverage[0:99]) for coverage in utr_coverage]  # filters threshold on mean coverage over first 100 nt
+    normalized_utr_coverage = [coverage/ coverage_weigths[i] for i, coverage in enumerate( utr_coverage.values() )]
+    start_coverage = [np.mean(coverage[0:99]) for coverage in utr_coverage.values()]  # filters threshold on mean coverage over first 100 nt
     is_above_threshold = sum(np.array(start_coverage) >= coverage_threshold) >= num_samples  # This filters on the raw threshold. Why?
     is_above_length = UTR_end - UTR_start >= 150
     if (is_above_threshold) and (is_above_length):
@@ -265,6 +274,8 @@ def estimate_abundance(Region_Coverage, breakpoint):
     return mse, mean_long_utr, mean_short_utr
 
 
+
 if __name__ == '__main__':
     args = parse_args()
     find_utr = UtrFinder(args)
+
