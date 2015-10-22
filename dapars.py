@@ -5,19 +5,8 @@ import numpy as np
 from collections import OrderedDict, namedtuple
 import filter_utr
 import subprocess
-
-
-def get_bp_coverage(alignment, chr, start, end, is_reverse=False):
-    """
-    Use pysam pileup method on indexed bam alignment files to retrieve strand-specific coverage in numpy array format.
-    This is way too slow, unfortunately.
-    """
-    pos_n = {pu.pos:sum([ int(pur.alignment.is_reverse == is_reverse) for pur in pu.pileups ]) for pu in alignment.pileup(chr, start, end)}
-    pus = np.array([pos_n.get(i, 0) for i in xrange(start, end)])
-    if not is_reverse:
-        return pus
-    else:
-        return pus[::-1]
+import time
+from multiprocessing import Pool
 
 def parse_args():
     """
@@ -46,7 +35,6 @@ class UtrFinder():
     def __init__(self, args):
         self.control_alignments = [file for file in args.control_alignments]
         self.treatment_alignments = [file for file in args.treatment_alignments]
-        #self.available_chromosomes = self.get_available_chromosome()
         self.utr = args.utr_bed_file
         self.gtf_fields = filter_utr.get_gtf_fields()
         self.result_file = args.output_file
@@ -62,7 +50,9 @@ class UtrFinder():
         print "got coverage_dict"
         self.coverage_weights = self.get_coverage_weights()
         self.result_tuple = self.get_result_tuple()
+        self.start = time.time()
         self.result_d = self.calculate_apa_ratios()
+        print "numpy took {0}".format(time.time() - self.start)
         self.write_results()
 
 
@@ -78,7 +68,7 @@ class UtrFinder():
         coverage_files = []
         for alignment_file in self.all_alignments:
             cmd = "sort -k1,1 -k2,2n tmp_bedfile.bed | "
-            cmd = cmd + "/usr/bin/bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
+            cmd = cmd + "bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
                         " cut -f 4,7,8 > coverage_file_{alignment_name}".format(
                 alignment_file = alignment_file, alignment_name= self.alignment_names[alignment_file] )
             print cmd
@@ -102,9 +92,6 @@ class UtrFinder():
                 for alignment_name in self.alignment_names.values():
                     coverage_dict[gene][alignment_name] = coverage_dict[gene][alignment_name][::-1]
         return coverage_dict
-
-#    def get_available_chromosome(self):
-#        return self.control_alignments[0].references
 
     def get_utr_dict(self, shift):
         utr_dict = OrderedDict()
@@ -163,47 +150,79 @@ class UtrFinder():
         samples_desc = []
         for statistic in ["coverage_long", "coverage_short", "percent_long"]:
             for i, sample in enumerate(self.control_alignments):
-                samples_desc.append("control_{i}_{statistic}".format(i=i+1, statistic = statistic))
+                samples_desc.append("control_{i}_{statistic}".format(i=i, statistic = statistic))
             for i, sample in enumerate(self.treatment_alignments):
-                samples_desc.append("treatment_{i}_{statistic}".format(i=i+1, statistic = statistic))
-        return namedtuple("result", static_desc + samples_desc, rename=True)
+                samples_desc.append("treatment_{i}_{statistic}".format(i=i, statistic = statistic))
+        return namedtuple("result", static_desc + samples_desc)
+
+
 
     def calculate_apa_ratios(self):
         result_d = OrderedDict()
-        for utr, utr_d in self.utr_dict.iteritems():
-            if utr_d["strand"] == "+":
-                is_reverse = False
-            else:
-                is_reverse = True
-            utr_coverage = self.utr_coverages[utr]
-            mse, breakpoint, abundances = estimate_coverage_extended_utr(utr_coverage,
-                                                                         utr_d["new_start"],
-                                                                         utr_d["new_end"],
-                                                                         is_reverse,
-                                                                         self.coverage_weights)
-            if not str(mse) == "Na":
-                long_coverage_vector = abundances[0]
-                short_coverage_vector = abundances[1]
-                num_non_zero = sum((np.array(long_coverage_vector) + np.array(short_coverage_vector)) > 0)  # TODO: This introduces bias
-                if num_non_zero == self.num_samples:
-                    percentage_long = []
-                    for i in range(self.num_samples):
-                        ratio = float(long_coverage_vector[i]) / (long_coverage_vector[i] + short_coverage_vector[i])  # long 3'UTR percentage
-                        percentage_long.append(ratio)
-                    control_mean_percent = np.mean(np.array(percentage_long[:len(self.control_alignments)]))
-                    treatment_mean_percent = np.mean(np.array(percentage_long[len(self.control_alignments):]))
-                    stats = zip(long_coverage_vector, short_coverage_vector, percentage_long)
-                    stats = [item for sublist in stats for item in sublist]
-                    res = self.result_tuple(utr_d["chr"], utr_d["start"], utr_d["end"], utr_d["strand"],
-                                       utr, breakpoint, control_mean_percent, treatment_mean_percent,
-                                       *stats)
-                    result_d[utr] = res
+        import time
+        start_time = time.time()
+        arg_d = {"result_tuple": self.result_tuple,
+                 "coverage_weights":self.coverage_weights,
+                 "num_samples":self.num_samples,
+                 "num_control":len(self.control_alignments),
+                 "num_treatment":len(self.treatment_alignments),
+                 "result_d":result_d}
+        #[ calculate_all_utr(self.utr_coverages[utr], utr, utr_d, **arg_d) for utr, utr_d in self.utr_dict.iteritems() ]
+        pool = Pool(2)
+        tasks = [ (self.utr_coverages[utr], utr, utr_d, self.result_tuple._fields, self.coverage_weights, self.num_samples,
+                    len(self.control_alignments), len(self.treatment_alignments), result_d) for utr, utr_d in self.utr_dict.iteritems() ]
+        result = [ pool.apply_async(calculate_all_utr, t) for t in tasks]
+        [res.get() for res in result]
+        for utr, utr_d in result_d:
+            result_d[utr] = self.result_tuple(*utr_d)
+        stop_time = time.time() - start_time
+        print "took {0} seconds".format(stop_time)
         return result_d
 
     def write_results(self):
         w = csv.writer(self.result_file, delimiter='\t')
         w.writerow((self.result_tuple._fields))    # field header
         w.writerows( self.result_d.values())
+
+def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_weights, num_samples, num_control, num_treatment, result_d):
+    res = dict(zip(result_tuple_fields, result_tuple_fields))
+    if utr_d["strand"] == "+":
+        is_reverse = False
+    else:
+        is_reverse = True
+    mse, breakpoint, abundances = estimate_coverage_extended_utr(utr_coverage,
+                                                                 utr_d["new_start"],
+                                                                 utr_d["new_end"],
+                                                                 is_reverse,
+                                                                 coverage_weights)
+    if not str(mse) == "Na":
+        long_coverage_vector = abundances[0]
+        short_coverage_vector = abundances[1]
+        num_non_zero = sum((np.array(long_coverage_vector) + np.array(short_coverage_vector)) > 0)  # TODO: This introduces bias
+        if num_non_zero == num_samples:
+            percentage_long = []
+            for i in range(num_samples):
+                ratio = float(long_coverage_vector[i]) / (long_coverage_vector[i] + short_coverage_vector[i])  # long 3'UTR percentage
+                percentage_long.append(ratio)
+            for i in range(num_control):
+                res["control_{i}_coverage_long".format(i=i)] = float(long_coverage_vector[i])
+                res["control_{i}_coverage_short".format(i=i)] = float(short_coverage_vector[i])
+                res["control_{i}_percent_long".format(i=i)] = percentage_long[i]
+            for k in range(num_treatment):
+                i = k + num_control
+                res["treatment_{i}_coverage_long".format(i=k)] = float(long_coverage_vector[i])
+                res["treatment_{i}_coverage_short".format(i=k)] = float(short_coverage_vector[i])
+                res["treatment_{i}_percent_long".format(i=k)] = percentage_long[i]
+            control_mean_percent = np.mean(np.array(percentage_long[:num_control]))
+            treatment_mean_percent = np.mean(np.array(percentage_long[num_control:]))
+            res["chr"] = utr_d["chr"]
+            res["start"] = utr_d["start"]
+            res["end"] = utr_d["end"]
+            res["strand"] = utr_d["strand"]
+            res["breakpoint"] = breakpoint
+            res["control_mean_percent"] = control_mean_percent
+            res["treatment_mean_percent"] = treatment_mean_percent
+            result_d[utr] = res
 
 
 def estimate_coverage_extended_utr(utr_coverage, UTR_start,
@@ -228,25 +247,15 @@ def estimate_coverage_extended_utr(utr_coverage, UTR_start,
             search_region = range(UTR_end - search_point_start, UTR_start + search_point_end - 1, -1)
         search_start = search_point_start
         search_end = UTR_end - UTR_start - search_point_end
-        mse_list = []
-        Estimated_3UTR_abundance_list = []
-        for curr_point in range(search_start, search_end + 1):
-            curr_search_point = curr_point
-            All_samples_result = [[], [], []]
-            for curr_sample_region_coverage in normalized_utr_coverage:
-                Mean_Squared_error, Long_UTR_abun, Short_UTR_abun = estimate_abundance(curr_sample_region_coverage,
-                                                                                       curr_search_point)
-                All_samples_result[0].append(Mean_Squared_error)
-                All_samples_result[1].append(Long_UTR_abun)
-                All_samples_result[2].append(Short_UTR_abun)
-            Mean_Squared_error = np.mean(np.array(All_samples_result[0]))
-            mse_list.append(Mean_Squared_error)
-            Estimated_3UTR_abundance_list.append([All_samples_result[1], All_samples_result[2]])
+        normalized_utr_coverage = np.array(normalized_utr_coverage)
+        breakpoints = range(search_start, search_end + 1)
+        mse_list = [ estimate_mse(normalized_utr_coverage,bp, num_samples) for bp in breakpoints ]
         if len(mse_list) > 0:
             min_ele_index = mse_list.index(min(mse_list))
+            breakpoint = breakpoints[min_ele_index]
+            UTR_abundances = estimate_abundance(normalized_utr_coverage, breakpoint, num_samples)
             select_mean_squared_error = mse_list[min_ele_index]
-            UTR_abundances = Estimated_3UTR_abundance_list[min_ele_index]
-            selected_break_point = search_region[min_ele_index]
+            selected_break_point = breakpoint
         else:
             select_mean_squared_error = 'Na'
             UTR_abundances = 'Na'
@@ -259,20 +268,25 @@ def estimate_coverage_extended_utr(utr_coverage, UTR_start,
     return select_mean_squared_error, selected_break_point, UTR_abundances
 
 
-def estimate_abundance(Region_Coverage, breakpoint):
+def estimate_mse(cov, bp, num_samples):
     """
     get abundance of long utr vs short utr with breakpoint specifying the position of long and short utr.
     """
-    long_utr_vector = Region_Coverage[breakpoint:]
-    short_utr_vector = Region_Coverage[0:breakpoint]
-    mean_long_utr = np.mean(long_utr_vector)
-    mean_short_utr = np.mean(Region_Coverage[0:breakpoint])
-    square_mean_centered_short_utr_vector = (short_utr_vector - mean_short_utr) **2
-    square_mean_centered_long_utr_vector = (long_utr_vector - mean_long_utr) ** 2
-    mse = np.mean(np.append(square_mean_centered_short_utr_vector, square_mean_centered_long_utr_vector))
+    long_utr_vector = cov[:num_samples, bp:]
+    short_utr_vector = cov[:num_samples, 0:bp]
+    mean_long_utr = np.mean(long_utr_vector, 1)
+    mean_short_utr = np.mean(short_utr_vector, 1)
+    square_mean_centered_short_utr_vector = (short_utr_vector[:num_samples] - mean_short_utr[:, np.newaxis] )**2
+    square_mean_centered_long_utr_vector = (long_utr_vector[:num_samples] - mean_long_utr[:, np.newaxis])**2
+    mse = np.mean(np.append(square_mean_centered_short_utr_vector[:num_samples], square_mean_centered_long_utr_vector[:num_samples]))
+    return mse
 
-    return mse, mean_long_utr, mean_short_utr
-
+def estimate_abundance(cov, bp, num_samples):
+    long_utr_vector = cov[:num_samples, bp:]
+    short_utr_vector = cov[:num_samples, 0:bp]
+    mean_long_utr = np.mean(long_utr_vector, 1)
+    mean_short_utr = np.mean(short_utr_vector, 1)
+    return mean_long_utr, mean_short_utr
 
 
 if __name__ == '__main__':
