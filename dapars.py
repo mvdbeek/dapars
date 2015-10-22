@@ -24,6 +24,8 @@ def parse_args():
                         help="Bed file describing longest 3UTR positions")
     parser.add_argument("-o", "--output_file", required=True, type=argparse.FileType('w'),
                         help="file containing output")
+    parser.add_argument("-cpu", required=False, type=int, default=1,
+                        help="Number of CPU cores to use.")
     return parser.parse_args()
 
 
@@ -35,6 +37,7 @@ class UtrFinder():
     def __init__(self, args):
         self.control_alignments = [file for file in args.control_alignments]
         self.treatment_alignments = [file for file in args.treatment_alignments]
+        self.n_cpus = args.cpu
         self.utr = args.utr_bed_file
         self.gtf_fields = filter_utr.get_gtf_fields()
         self.result_file = args.output_file
@@ -68,7 +71,7 @@ class UtrFinder():
         coverage_files = []
         for alignment_file in self.all_alignments:
             cmd = "sort -k1,1 -k2,2n tmp_bedfile.bed | "
-            cmd = cmd + "~/bin/bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
+            cmd = cmd + "bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
                         " cut -f 4,7,8 > coverage_file_{alignment_name}".format(
                 alignment_file = alignment_file, alignment_name= self.alignment_names[alignment_file] )
             print cmd
@@ -81,7 +84,7 @@ class UtrFinder():
         """
         Read coverages back in and store as dictionary of numpy arrays
         """
-        coverage_dict = { gene: { file: np.zeros(utr_d["new_end"]+1-utr_d["new_start"]) for file in self.all_alignments } for gene, utr_d in self.utr_dict.iteritems() }
+        coverage_dict = { gene: { name: np.zeros(utr_d["new_end"]+1-utr_d["new_start"]) for name in self.alignment_names.itervalues() } for gene, utr_d in self.utr_dict.iteritems() }
         for alignment_name in self.alignment_names.itervalues():
             with open("coverage_file_{alignment_name}".format(alignment_name = alignment_name)) as coverage_file:
                 for line in coverage_file:
@@ -168,7 +171,7 @@ class UtrFinder():
                  "num_treatment":len(self.treatment_alignments),
                  "result_d":result_d}
         #[ calculate_all_utr(self.utr_coverages[utr], utr, utr_d, **arg_d) for utr, utr_d in self.utr_dict.iteritems() ]
-        pool = Pool(2)
+        pool = Pool(self.n_cpus)
         tasks = [ (self.utr_coverages[utr], utr, utr_d, self.result_tuple._fields, self.coverage_weights, self.num_samples,
                     len(self.control_alignments), len(self.treatment_alignments), result_d) for utr, utr_d in self.utr_dict.iteritems() ]
         processed_tasks = [ pool.apply_async(calculate_all_utr, t) for t in tasks]
