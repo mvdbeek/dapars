@@ -1,0 +1,39 @@
+<tool id="dapars" name="dapars" version="0.1.0">
+    <description>infer de-novo alternative polyadenylation from rna-seq</description>
+
+    <requirements>
+        <requirement type="package" version="1.9">numpy</requirement>
+        <requirement type="package" version="2.22">bedtools</requirement>
+    </requirements>
+    <stdio>
+        <exit_code range="1:" />
+    </stdio>
+
+    <command interpreter="python"><![CDATA[
+        dapars.py -c
+        #for $c in $controls:
+            "$c"
+        #end for
+        -t
+        #for $t in $treatments:
+            "$t"
+        #end for
+        -u "$utr" 
+        -o "$apa_sites"
+        -cpu \${GALAXY_SLOTS:-4}
+    ]]></command>
+    <inputs>
+        <param type="data" name="utr" format="gff" />
+        <param type="data" name="controls" format="bam,sam" multiple="True" />
+        <param type="data" name="treatments" format="bam,sam" multiple="True"/>
+    </inputs>
+    <outputs>
+        <data name="apa_sites" format="tabular" />
+    </outputs>
+    <help><![CDATA[
+        TODO: Fill in help.
+    ]]></help>
+    <citations>
+        <citation type="doi">10.1038/ncomms6274</citation>
+    </citations>
+</tool>
