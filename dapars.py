@@ -68,7 +68,7 @@ class UtrFinder():
         coverage_files = []
         for alignment_file in self.all_alignments:
             cmd = "sort -k1,1 -k2,2n tmp_bedfile.bed | "
-            cmd = cmd + "bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
+            cmd = cmd + "~/bin/bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
                         " cut -f 4,7,8 > coverage_file_{alignment_name}".format(
                 alignment_file = alignment_file, alignment_name= self.alignment_names[alignment_file] )
             print cmd
@@ -171,10 +171,12 @@ class UtrFinder():
         pool = Pool(2)
         tasks = [ (self.utr_coverages[utr], utr, utr_d, self.result_tuple._fields, self.coverage_weights, self.num_samples,
                     len(self.control_alignments), len(self.treatment_alignments), result_d) for utr, utr_d in self.utr_dict.iteritems() ]
-        result = [ pool.apply_async(calculate_all_utr, t) for t in tasks]
-        [res.get() for res in result]
-        for utr, utr_d in result_d:
-            result_d[utr] = self.result_tuple(*utr_d)
+        processed_tasks = [ pool.apply_async(calculate_all_utr, t) for t in tasks]
+        result = [res.get() for res in processed_tasks]
+        for d in result:
+            if isinstance(d, dict):
+                t = self.result_tuple(**d)
+                result_d[d["gene"]] = t
         stop_time = time.time() - start_time
         print "took {0} seconds".format(stop_time)
         return result_d
@@ -222,7 +224,8 @@ def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_we
             res["breakpoint"] = breakpoint
             res["control_mean_percent"] = control_mean_percent
             res["treatment_mean_percent"] = treatment_mean_percent
-            result_d[utr] = res
+            res["gene"] = utr
+            return res
 
 
 def estimate_coverage_extended_utr(utr_coverage, UTR_start,
