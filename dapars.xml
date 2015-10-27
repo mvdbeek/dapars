@@ -1,4 +1,4 @@
-<tool id="dapars" name="dapars" version="0.1.0">
+<tool id="dapars" name="dapars" version="0.1.1">
     <description>infer de-novo alternative polyadenylation from rna-seq</description>
 
     <requirements>
@@ -8,7 +8,6 @@
     <stdio>
         <exit_code range="1:" />
     </stdio>
-
     <command interpreter="python"><![CDATA[
         dapars.py -c
         #for $c in $controls:
@@ -21,11 +20,16 @@
         -u "$utr" 
         -o "$apa_sites"
         -cpu \${GALAXY_SLOTS:-4}
+        --coverage_threshold "$coverage_threshold"
+        --search_start "$search_start"
     ]]></command>
     <inputs>
-        <param type="data" name="utr" format="gff" />
-        <param type="data" name="controls" format="bam,sam" multiple="True" />
-        <param type="data" name="treatments" format="bam,sam" multiple="True"/>
+        <param type="data" name="utr" format="gtf" label="GFF file containing 3prime UTRs" help="featureType of the UTRs
+        must be UTR, and the attribute group must have geneid in first position."/>
+        <param type="data" name="controls" format="bam,sam" multiple="True" label="Control alignment files" help="Select control alignment files" />
+        <param type="data" name="treatments" format="bam,sam" multiple="True" label="Treatment alignment files" help="Select treatment alignment files" />
+        <param type="integer" name="search_start" value="100" optional="False" min="1" label="Search start" help="Search start in nucleotides downstream of the start of the UTR. Necessary to correct for proximal drops in coverage. Select 200 for humans. Genomes with short UTRs may require more prpximal search start points."/>
+        <param type="float" name="coverage_threshold" value="20" optional="False" label="Coverage threshold" help="Skip the analysis of UTRs whose mean coverage is below the Coverage Threshold in any of the alignment files."/>
     </inputs>
     <outputs>
         <data name="apa_sites" format="tabular" />

@@ -5,8 +5,9 @@ import numpy as np
 from collections import OrderedDict, namedtuple
 import filter_utr
 import subprocess
-import time
 from multiprocessing import Pool
+import warnings
+
 
 def parse_args():
     """
@@ -15,7 +16,7 @@ def parse_args():
     :param argv:
     :return:
     """
-    parser = argparse.ArgumentParser(description='Determines the usage of proximal polyA usage')
+    parser = argparse.ArgumentParser(prog='DaPars', description='Determines the usage of proximal polyA usage')
     parser.add_argument("-c", "--control_alignments", nargs="+", required=True,
                         help="Alignment files in BAM format from control condition")
     parser.add_argument("-t", "--treatment_alignments", nargs="+", required=True,
@@ -26,6 +27,11 @@ def parse_args():
                         help="file containing output")
     parser.add_argument("-cpu", required=False, type=int, default=1,
                         help="Number of CPU cores to use.")
+    parser.add_argument("-s", "--search_start", required=False, type=int, default=50,
+                        help="Start search for breakpoint n nucleotides downstream of UTR start")
+    parser.add_argument("-ct", "--coverage_threshold", required=False, type=float, default=20,
+                        help="minimum coverage in each aligment to be considered for determining breakpoints")
+    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.1')
     return parser.parse_args()
 
 
@@ -38,6 +44,8 @@ class UtrFinder():
         self.control_alignments = [file for file in args.control_alignments]
         self.treatment_alignments = [file for file in args.treatment_alignments]
         self.n_cpus = args.cpu
+        self.search_start = args.search_start
+        self.coverage_threshold = args.coverage_threshold
         self.utr = args.utr_bed_file
         self.gtf_fields = filter_utr.get_gtf_fields()
         self.result_file = args.output_file
@@ -46,16 +54,13 @@ class UtrFinder():
         self.num_samples = len(self.all_alignments)
         self.utr_dict = self.get_utr_dict(0.2)
         self.dump_utr_dict_to_bedfile()
-        print "done getting utr_dict"
+        print "Established dictionary of 3\'UTRs"
         self.coverage_files = self.run_bedtools_coverage()
-        print "produced coverage files"
         self.utr_coverages = self.read_coverage_result()
-        print "got coverage_dict"
+        print "Established dictionary of 3\'UTR coverages"
         self.coverage_weights = self.get_coverage_weights()
         self.result_tuple = self.get_result_tuple()
-        self.start = time.time()
         self.result_d = self.calculate_apa_ratios()
-        print "numpy took {0}".format(time.time() - self.start)
         self.write_results()
 
 
@@ -69,15 +74,18 @@ class UtrFinder():
         Use bedtools coverage to generate pileup data for all alignment files for the regions specified in utr_dict.
         """
         coverage_files = []
+        cmds = []
         for alignment_file in self.all_alignments:
             cmd = "sort -k1,1 -k2,2n tmp_bedfile.bed | "
             cmd = cmd + "bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
                         " cut -f 4,7,8 > coverage_file_{alignment_name}".format(
                 alignment_file = alignment_file, alignment_name= self.alignment_names[alignment_file] )
-            print cmd
-            subprocess.call([cmd], shell=True)
-            coverage_files.append("gene_position_coverage_{alignment_name}".format(
-                alignment_name = self.alignment_names[alignment_file]))
+            cmds.append(cmd)
+        pool = Pool(self.n_cpus)
+        subprocesses = [subprocess.Popen([cmd], shell=True) for cmd in cmds]
+        [p.wait() for p in subprocesses]
+        coverage_files = ["gene_position_coverage_{alignment_name}".format(
+                alignment_name = self.alignment_names[alignment_file]) for alignment_file in self.all_alignments ]
         return coverage_files
 
     def read_coverage_result(self):
@@ -100,7 +108,7 @@ class UtrFinder():
         utr_dict = OrderedDict()
         for line in self.utr:
             if not line.startswith("#"):
-                filter_utr.get_utr_dict( line, self.gtf_fields, utr_dict )
+                filter_utr.get_feature_dict( line=line, gtf_fields=self.gtf_fields, utr_dict=utr_dict, feature="UTR" )
                 gene, utr_d = utr_dict.popitem()
                 utr_d = utr_d[0]
                 end_shift = int(round(abs(utr_d["start"] - utr_d["end"]) * shift))
@@ -158,38 +166,34 @@ class UtrFinder():
                 samples_desc.append("treatment_{i}_{statistic}".format(i=i, statistic = statistic))
         return namedtuple("result", static_desc + samples_desc)
 
-
-
     def calculate_apa_ratios(self):
         result_d = OrderedDict()
-        import time
-        start_time = time.time()
         arg_d = {"result_tuple": self.result_tuple,
                  "coverage_weights":self.coverage_weights,
                  "num_samples":self.num_samples,
                  "num_control":len(self.control_alignments),
                  "num_treatment":len(self.treatment_alignments),
                  "result_d":result_d}
-        #[ calculate_all_utr(self.utr_coverages[utr], utr, utr_d, **arg_d) for utr, utr_d in self.utr_dict.iteritems() ]
         pool = Pool(self.n_cpus)
         tasks = [ (self.utr_coverages[utr], utr, utr_d, self.result_tuple._fields, self.coverage_weights, self.num_samples,
-                    len(self.control_alignments), len(self.treatment_alignments), result_d) for utr, utr_d in self.utr_dict.iteritems() ]
+                    len(self.control_alignments), len(self.treatment_alignments), result_d, self.search_start, self.coverage_threshold) for utr, utr_d in self.utr_dict.iteritems() ]
         processed_tasks = [ pool.apply_async(calculate_all_utr, t) for t in tasks]
         result = [res.get() for res in processed_tasks]
         for d in result:
             if isinstance(d, dict):
                 t = self.result_tuple(**d)
                 result_d[d["gene"]] = t
-        stop_time = time.time() - start_time
-        print "took {0} seconds".format(stop_time)
         return result_d
 
     def write_results(self):
         w = csv.writer(self.result_file, delimiter='\t')
-        w.writerow((self.result_tuple._fields))    # field header
+        header = list(self.result_tuple._fields)
+        header[0] = "#chr"
+        w.writerow(header)    # field header
         w.writerows( self.result_d.values())
 
-def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_weights, num_samples, num_control, num_treatment, result_d):
+def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_weights, num_samples, num_control,
+                      num_treatment, result_d, search_start, coverage_threshold):
     res = dict(zip(result_tuple_fields, result_tuple_fields))
     if utr_d["strand"] == "+":
         is_reverse = False
@@ -199,7 +203,9 @@ def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_we
                                                                  utr_d["new_start"],
                                                                  utr_d["new_end"],
                                                                  is_reverse,
-                                                                 coverage_weights)
+                                                                 coverage_weights,
+                                                                 search_start,
+                                                                 coverage_threshold)
     if not str(mse) == "Na":
         long_coverage_vector = abundances[0]
         short_coverage_vector = abundances[1]
@@ -232,13 +238,11 @@ def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_we
 
 
 def estimate_coverage_extended_utr(utr_coverage, UTR_start,
-                                   UTR_end, is_reverse, coverage_weigths):
+                                   UTR_end, is_reverse, coverage_weigths, search_start, coverage_threshold):
     """
     We are searching for a breakpoint in coverage?!
     utr_coverage is a list with items corresponding to numpy arrays of coverage for a sample.
     """
-    coverage_threshold = 15
-    search_point_start = 200
     search_point_end = int(abs((UTR_end - UTR_start)) * 0.1)  # TODO: This is 10% of total UTR end. Why?
     num_samples = len(utr_coverage)
     ##read coverage filtering
@@ -248,10 +252,9 @@ def estimate_coverage_extended_utr(utr_coverage, UTR_start,
     is_above_length = UTR_end - UTR_start >= 150
     if (is_above_threshold) and (is_above_length):
         if not is_reverse:
-            search_region = range(UTR_start + search_point_start, UTR_end - search_point_end + 1)
+            search_region = range(UTR_start + search_start, UTR_end - search_point_end + 1)
         else:
-            search_region = range(UTR_end - search_point_start, UTR_start + search_point_end - 1, -1)
-        search_start = search_point_start
+            search_region = range(UTR_end - search_start, UTR_start + search_point_end - 1, -1)
         search_end = UTR_end - UTR_start - search_point_end
         normalized_utr_coverage = np.array(normalized_utr_coverage)
         breakpoints = range(search_start, search_end + 1)
@@ -278,21 +281,25 @@ def estimate_mse(cov, bp, num_samples):
     """
     get abundance of long utr vs short utr with breakpoint specifying the position of long and short utr.
     """
-    long_utr_vector = cov[:num_samples, bp:]
-    short_utr_vector = cov[:num_samples, 0:bp]
-    mean_long_utr = np.mean(long_utr_vector, 1)
-    mean_short_utr = np.mean(short_utr_vector, 1)
-    square_mean_centered_short_utr_vector = (short_utr_vector[:num_samples] - mean_short_utr[:, np.newaxis] )**2
-    square_mean_centered_long_utr_vector = (long_utr_vector[:num_samples] - mean_long_utr[:, np.newaxis])**2
-    mse = np.mean(np.append(square_mean_centered_short_utr_vector[:num_samples], square_mean_centered_long_utr_vector[:num_samples]))
-    return mse
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        long_utr_vector = cov[:num_samples, bp:]
+        short_utr_vector = cov[:num_samples, 0:bp]
+        mean_long_utr = np.mean(long_utr_vector, 1)
+        mean_short_utr = np.mean(short_utr_vector, 1)
+        square_mean_centered_short_utr_vector = (short_utr_vector[:num_samples] - mean_short_utr[:, np.newaxis] )**2
+        square_mean_centered_long_utr_vector = (long_utr_vector[:num_samples] - mean_long_utr[:, np.newaxis])**2
+        mse = np.mean(np.append(square_mean_centered_short_utr_vector[:num_samples], square_mean_centered_long_utr_vector[:num_samples]))
+        return mse
 
 def estimate_abundance(cov, bp, num_samples):
-    long_utr_vector = cov[:num_samples, bp:]
-    short_utr_vector = cov[:num_samples, 0:bp]
-    mean_long_utr = np.mean(long_utr_vector, 1)
-    mean_short_utr = np.mean(short_utr_vector, 1)
-    return mean_long_utr, mean_short_utr
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        long_utr_vector = cov[:num_samples, bp:]
+        short_utr_vector = cov[:num_samples, 0:bp]
+        mean_long_utr = np.mean(long_utr_vector, 1)
+        mean_short_utr = np.mean(short_utr_vector, 1)
+        return mean_long_utr, mean_short_utr
 
 
 if __name__ == '__main__':
