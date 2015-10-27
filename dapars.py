@@ -31,7 +31,7 @@ def parse_args():
                         help="Start search for breakpoint n nucleotides downstream of UTR start")
     parser.add_argument("-ct", "--coverage_threshold", required=False, type=float, default=20,
                         help="minimum coverage in each aligment to be considered for determining breakpoints")
-    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.1')
+    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.2')
     return parser.parse_args()
 
 
