@@ -33,7 +33,7 @@ def parse_args():
                         help="minimum coverage in each aligment to be considered for determining breakpoints")
     parser.add_argument("-b", "--breakpoint_bed", required=False, type=argparse.FileType('w'),
                         help="Write bedfile with coordinates of breakpoint positions to supplied path.")
-    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.3')
+    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.4')
     return parser.parse_args()
 
 
@@ -199,7 +199,7 @@ class UtrFinder():
 
     def write_bed(self):
         w = csv.writer(self.bed_output, delimiter='\t')
-        bed = [(result.chr, result.start+result.breakpoint, result.start+result.breakpoint+1, result.gene, 0, result.strand) for result in self.result_d.itervalues()]
+        bed = [(result.chr, result.breakpoint, result.breakpoint+1, result.gene, 0, result.strand) for result in self.result_d.itervalues()]
         w.writerows(bed)
 
 def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_weights, num_samples, num_control,
@@ -240,6 +240,10 @@ def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_we
             res["start"] = utr_d["start"]
             res["end"] = utr_d["end"]
             res["strand"] = utr_d["strand"]
+            if is_reverse:
+                breakpoint = utr_d["new_end"] - breakpoint
+            else:
+                breakpoint = utr_d["new_start"] + breakpoint
             res["breakpoint"] = breakpoint
             res["control_mean_percent"] = control_mean_percent
             res["treatment_mean_percent"] = treatment_mean_percent

@@ -1,4 +1,4 @@
-<tool id="dapars" name="dapars" version="0.1.3">
+<tool id="dapars" name="dapars" version="0.1.4">
     <description>infer de-novo alternative polyadenylation from rna-seq</description>
     <requirements>
         <requirement type="package" version="1.9">numpy</requirement>
