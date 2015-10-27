@@ -1,6 +1,5 @@
-<tool id="dapars" name="dapars" version="0.1.2">
+<tool id="dapars" name="dapars" version="0.1.3">
     <description>infer de-novo alternative polyadenylation from rna-seq</description>
-
     <requirements>
         <requirement type="package" version="1.9">numpy</requirement>
         <requirement type="package" version="2.22">bedtools</requirement>
@@ -22,6 +21,9 @@
         -cpu \${GALAXY_SLOTS:-4}
         --coverage_threshold "$coverage_threshold"
         --search_start "$search_start"
+        #if $make_breakpoint:
+            -b "$breakpoint_bed"
+        #end if
     ]]></command>
     <inputs>
         <param type="data" name="utr" format="gtf" label="GFF file containing 3prime UTRs" help="featureType of the UTRs
@@ -30,9 +32,13 @@
         <param type="data" name="treatments" format="bam,sam" multiple="True" label="Treatment alignment files" help="Select treatment alignment files" />
         <param type="integer" name="search_start" value="100" optional="False" min="1" label="Search start" help="Search start in nucleotides downstream of the start of the UTR. Necessary to correct for proximal drops in coverage. Select 200 for humans. Genomes with short UTRs may require more prpximal search start points."/>
         <param type="float" name="coverage_threshold" value="20" optional="False" label="Coverage threshold" help="Skip the analysis of UTRs whose mean coverage is below the Coverage Threshold in any of the alignment files."/>
+        <param name="make_breakpoint" type="boolean" checked="False" label="Output bedfile with breakpoint positions?"/>
     </inputs>
     <outputs>
         <data name="apa_sites" format="tabular" />
+        <data name="breakpoint_bed" format="bed6">
+            <filter>(make_breakpoint == True)</filter>
+        </data>
     </outputs>
     <help><![CDATA[
         TODO: Fill in help.

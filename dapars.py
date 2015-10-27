@@ -31,7 +31,9 @@ def parse_args():
                         help="Start search for breakpoint n nucleotides downstream of UTR start")
     parser.add_argument("-ct", "--coverage_threshold", required=False, type=float, default=20,
                         help="minimum coverage in each aligment to be considered for determining breakpoints")
-    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.2')
+    parser.add_argument("-b", "--breakpoint_bed", required=False, type=argparse.FileType('w'),
+                        help="Write bedfile with coordinates of breakpoint positions to supplied path.")
+    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.3')
     return parser.parse_args()
 
 
@@ -62,6 +64,9 @@ class UtrFinder():
         self.result_tuple = self.get_result_tuple()
         self.result_d = self.calculate_apa_ratios()
         self.write_results()
+        if args.breakpoint_bed:
+            self.bed_output = args.breakpoint_bed
+            self.write_bed()
 
 
     def dump_utr_dict_to_bedfile(self):
@@ -191,6 +196,11 @@ class UtrFinder():
         header[0] = "#chr"
         w.writerow(header)    # field header
         w.writerows( self.result_d.values())
+
+    def write_bed(self):
+        w = csv.writer(self.bed_output, delimiter='\t')
+        bed = [(result.chr, result.start+result.breakpoint, result.start+result.breakpoint+1, result.gene, 0, result.strand) for result in self.result_d.itervalues()]
+        w.writerows(bed)
 
 def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_weights, num_samples, num_control,
                       num_treatment, result_d, search_start, coverage_threshold):
