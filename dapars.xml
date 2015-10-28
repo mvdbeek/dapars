@@ -1,4 +1,4 @@
-<tool id="dapars" name="dapars" version="0.1.4">
+<tool id="dapars" name="dapars" version="0.1.6">
     <description>infer de-novo alternative polyadenylation from rna-seq</description>
     <requirements>
         <requirement type="package" version="1.9">numpy</requirement>
@@ -40,8 +40,20 @@
             <filter>(make_breakpoint == True)</filter>
         </data>
     </outputs>
+    <tests>
+        <test>
+            <param name="utr" value="example.gtf"></param>
+            <param name="controls" value="c1.bam,c2.bam,c3.bam"></param>
+            <param name="treatments" value="t1.bam,t2.bam"></param>
+            <param name="coverage_threshold" value="5"></param>
+            <param name="make_breakpoint" value="True"></param>
+            <output name="apa_sites" file="dapars.tab"></output>
+            <output name="breakpoint_bed" file="breakpoint.bed"></output>
+        </test>
+    </tests>
     <help><![CDATA[
-        TODO: Fill in help.
+        DaPars works on RNAseq aligment files to find drops of coverage within UTRs. The coverage is then divided into
+        proximal and distal, and the ratio is calculated for each sample.
     ]]></help>
     <citations>
         <citation type="doi">10.1038/ncomms6274</citation>

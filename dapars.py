@@ -2,6 +2,7 @@ import argparse
 import os
 import csv
 import numpy as np
+from scipy import stats
 from collections import OrderedDict, namedtuple
 import filter_utr
 import subprocess
@@ -33,7 +34,7 @@ def parse_args():
                         help="minimum coverage in each aligment to be considered for determining breakpoints")
     parser.add_argument("-b", "--breakpoint_bed", required=False, type=argparse.FileType('w'),
                         help="Write bedfile with coordinates of breakpoint positions to supplied path.")
-    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.5')
+    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.6')
     return parser.parse_args()
 
 
@@ -63,11 +64,14 @@ class UtrFinder():
         self.coverage_weights = self.get_coverage_weights()
         self.result_tuple = self.get_result_tuple()
         self.result_d = self.calculate_apa_ratios()
+        self.stat_test()
         self.write_results()
         if args.breakpoint_bed:
             self.bed_output = args.breakpoint_bed
             self.write_bed()
 
+    def stat_test(self):
+        pass
 
     def dump_utr_dict_to_bedfile(self):
         w = csv.writer(open("tmp_bedfile.bed", "w"), delimiter="\t")
@@ -211,7 +215,7 @@ def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_we
     if res_control == dict(zip(result_tuple_fields, result_tuple_fields)):
         res_control = False
     if res_treatment == dict(zip(result_tuple_fields, result_tuple_fields)):
-        res_treatment == False
+        res_treatment = False
     return res_control, res_treatment
 
 
