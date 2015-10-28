@@ -185,7 +185,7 @@ class UtrFinder():
 
     def write_bed(self):
         w = csv.writer(self.bed_output, delimiter='\t')
-        bed = [(result.chr, result.breakpoint, result.breakpoint+1, result.gene+"_"+result.breakpoint_type, 0, result.strand) for result in self.result_d.itervalues()]
+        bed = [(result.chr, result.breakpoint, int(result.breakpoint)+1, result.gene+"_"+result.breakpoint_type, 0, result.strand) for result in self.result_d.itervalues()]
         w.writerows(bed)
 
 
@@ -208,6 +208,10 @@ def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_we
     if treatment_breakpoint:
         breakpoint_to_result(res_treatment, utr, utr_d, treatment_breakpoint, "treatment_breakpoint", treatment_abundance, is_reverse,
                              num_samples, num_control, num_treatment)
+    if res_control == dict(zip(result_tuple_fields, result_tuple_fields)):
+        res_control = False
+    if res_treatment == dict(zip(result_tuple_fields, result_tuple_fields)):
+        res_treatment == False
     return res_control, res_treatment
 
 
