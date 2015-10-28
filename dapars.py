@@ -28,7 +28,7 @@ def parse_args():
                         help="file containing output")
     parser.add_argument("-cpu", required=False, type=int, default=1,
                         help="Number of CPU cores to use.")
-    parser.add_argument("-s", "--search_start", required=False, type=int, default=1,
+    parser.add_argument("-s", "--search_start", required=False, type=int, default=50,
                         help="Start search for breakpoint n nucleotides downstream of UTR start")
     parser.add_argument("-ct", "--coverage_threshold", required=False, type=float, default=20,
                         help="minimum coverage in each aligment to be considered for determining breakpoints")
@@ -227,37 +227,35 @@ def breakpoints_to_result(utr, utr_d, breakpoints, breakpoint_type,
         res = {}
         long_coverage_vector = abundance[0]
         short_coverage_vector = abundance[1]
-        num_non_zero = sum((np.array(long_coverage_vector) + np.array(short_coverage_vector)) > 0)  # TODO: This introduces bias
-        if num_non_zero == num_samples:
-            percentage_long = []
-            for i in range(num_samples):
-                ratio = float(long_coverage_vector[i]) / (long_coverage_vector[i] + short_coverage_vector[i])  # long 3'UTR percentage
-                percentage_long.append(ratio)
-            for i in range(num_control):
-                res["control_{i}_coverage_long".format(i=i)] = float(long_coverage_vector[i])
-                res["control_{i}_coverage_short".format(i=i)] = float(short_coverage_vector[i])
-                res["control_{i}_percent_long".format(i=i)] = percentage_long[i]
-            for k in range(num_treatment):
-                i = k + num_control
-                res["treatment_{i}_coverage_long".format(i=k)] = float(long_coverage_vector[i])
-                res["treatment_{i}_coverage_short".format(i=k)] = float(short_coverage_vector[i])
-                res["treatment_{i}_percent_long".format(i=k)] = percentage_long[i]
-            control_mean_percent = np.mean(np.array(percentage_long[:num_control]))
-            treatment_mean_percent = np.mean(np.array(percentage_long[num_control:]))
-            res["chr"] = utr_d["chr"]
-            res["start"] = utr_d["start"]
-            res["end"] = utr_d["end"]
-            res["strand"] = utr_d["strand"]
-            if is_reverse:
-                breakpoint = utr_d["new_end"] - breakpoint
-            else:
-                breakpoint = utr_d["new_start"] + breakpoint
-            res["breakpoint"] = breakpoint
-            res["breakpoint_type"] = breakpoint_type
-            res["control_mean_percent"] = control_mean_percent
-            res["treatment_mean_percent"] = treatment_mean_percent
-            res["gene"] = utr
-            result.append(res)
+        percentage_long = []
+        for i in range(num_samples):
+            ratio = float(long_coverage_vector[i]) / (long_coverage_vector[i] + short_coverage_vector[i])  # long 3'UTR percentage
+            percentage_long.append(ratio)
+        for i in range(num_control):
+            res["control_{i}_coverage_long".format(i=i)] = float(long_coverage_vector[i])
+            res["control_{i}_coverage_short".format(i=i)] = float(short_coverage_vector[i])
+            res["control_{i}_percent_long".format(i=i)] = percentage_long[i]
+        for k in range(num_treatment):
+            i = k + num_control
+            res["treatment_{i}_coverage_long".format(i=k)] = float(long_coverage_vector[i])
+            res["treatment_{i}_coverage_short".format(i=k)] = float(short_coverage_vector[i])
+            res["treatment_{i}_percent_long".format(i=k)] = percentage_long[i]
+        control_mean_percent = np.mean(np.array(percentage_long[:num_control]))
+        treatment_mean_percent = np.mean(np.array(percentage_long[num_control:]))
+        res["chr"] = utr_d["chr"]
+        res["start"] = utr_d["start"]
+        res["end"] = utr_d["end"]
+        res["strand"] = utr_d["strand"]
+        if is_reverse:
+            breakpoint = utr_d["new_end"] - breakpoint
+        else:
+            breakpoint = utr_d["new_start"] + breakpoint
+        res["breakpoint"] = breakpoint
+        res["breakpoint_type"] = breakpoint_type
+        res["control_mean_percent"] = control_mean_percent
+        res["treatment_mean_percent"] = treatment_mean_percent
+        res["gene"] = utr
+        result.append(res)
     return result
 
 
