@@ -28,13 +28,13 @@ def parse_args():
                         help="file containing output")
     parser.add_argument("-cpu", required=False, type=int, default=1,
                         help="Number of CPU cores to use.")
-    parser.add_argument("-s", "--search_start", required=False, type=int, default=50,
+    parser.add_argument("-s", "--search_start", required=False, type=int, default=1,
                         help="Start search for breakpoint n nucleotides downstream of UTR start")
     parser.add_argument("-ct", "--coverage_threshold", required=False, type=float, default=20,
                         help="minimum coverage in each aligment to be considered for determining breakpoints")
     parser.add_argument("-b", "--breakpoint_bed", required=False, type=argparse.FileType('w'),
                         help="Write bedfile with coordinates of breakpoint positions to supplied path.")
-    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.6')
+    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.7')
     return parser.parse_args()
 
 
@@ -170,15 +170,17 @@ class UtrFinder():
                     len(self.control_alignments), len(self.treatment_alignments), self.search_start,
                    self.coverage_threshold) for utr, utr_d in self.utr_dict.iteritems() ]
         processed_tasks = [ pool.apply_async(calculate_all_utr, t) for t in tasks]
-        result = [res.get() for res in processed_tasks]
-        for res_control, res_treatment in result:
-            if isinstance(res_control, dict):
-                t = self.result_tuple(**res_control)
-                result_d[res_control["gene"]+"_bp_control"] = t
-            if isinstance(res_treatment, dict):
-                t = self.result_tuple(**res_treatment)
-                result_d[res_treatment["gene"]+"_bp_treatment"] = t
-        return result_d
+        result_list = [res.get() for res in processed_tasks]
+        for res_control, res_treatment in result_list:
+            for i, result in enumerate(res_control):
+                if isinstance(result, dict):
+                    t = self.result_tuple(**result)
+                    result_d[result["gene"]+"_bp_control_{i}".format(i=i)] = t
+            for i, result in enumerate(res_treatment):
+                if isinstance(result, dict):
+                    t = self.result_tuple(**result)
+                    result_d[result["gene"]+"_bp_treatment_{i}".format(i=i)] = t
+            return result_d
 
     def write_results(self):
         w = csv.writer(self.result_file, delimiter='\t')
@@ -195,67 +197,68 @@ class UtrFinder():
 
 def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_weights, num_samples, num_control,
                       num_treatment, search_start, coverage_threshold):
-    res_control = dict(zip(result_tuple_fields, result_tuple_fields))
-    res_treatment = res_control.copy()
+    #res_control = dict(zip(result_tuple_fields, result_tuple_fields))
+    #res_treatment = res_control.copy()
     if utr_d["strand"] == "+":
         is_reverse = False
     else:
         is_reverse = True
-    control_breakpoint, \
-    control_abundance, \
-    treatment_breakpoint, \
-    treatment_abundance  = optimize_breakpoint(utr_coverage, utr_d["new_start"], utr_d["new_end"], coverage_weights,
+    control_breakpoints, \
+    control_abundances, \
+    treatment_breakpoints, \
+    treatment_abundances  = optimize_breakpoint(utr_coverage, utr_d["new_start"], utr_d["new_end"], coverage_weights,
                                                  search_start, coverage_threshold, num_control)
-    if control_breakpoint:
-        breakpoint_to_result(res_control, utr, utr_d, control_breakpoint, "control_breakpoint", control_abundance, is_reverse, num_samples,
+    if len(control_breakpoints) > 0:
+        res_control = breakpoints_to_result(utr, utr_d, control_breakpoints, "control_breakpoint", control_abundances, is_reverse, num_samples,
                              num_control, num_treatment)
-    if treatment_breakpoint:
-        breakpoint_to_result(res_treatment, utr, utr_d, treatment_breakpoint, "treatment_breakpoint", treatment_abundance, is_reverse,
+    if len(treatment_breakpoints) >0:
+        res_treatment = breakpoints_to_result(utr, utr_d, treatment_breakpoints, "treatment_breakpoint", treatment_abundances, is_reverse,
                              num_samples, num_control, num_treatment)
-    if res_control == dict(zip(result_tuple_fields, result_tuple_fields)):
-        res_control = False
-    if res_treatment == dict(zip(result_tuple_fields, result_tuple_fields)):
-        res_treatment = False
     return res_control, res_treatment
 
 
-def breakpoint_to_result(res, utr, utr_d, breakpoint, breakpoint_type,
+def breakpoints_to_result(utr, utr_d, breakpoints, breakpoint_type,
                          abundances, is_reverse, num_samples, num_control, num_treatment):
     """
     Takes in a result dictionary res and fills the necessary fields
     """
-    long_coverage_vector = abundances[0]
-    short_coverage_vector = abundances[1]
-    num_non_zero = sum((np.array(long_coverage_vector) + np.array(short_coverage_vector)) > 0)  # TODO: This introduces bias
-    if num_non_zero == num_samples:
-        percentage_long = []
-        for i in range(num_samples):
-            ratio = float(long_coverage_vector[i]) / (long_coverage_vector[i] + short_coverage_vector[i])  # long 3'UTR percentage
-            percentage_long.append(ratio)
-        for i in range(num_control):
-            res["control_{i}_coverage_long".format(i=i)] = float(long_coverage_vector[i])
-            res["control_{i}_coverage_short".format(i=i)] = float(short_coverage_vector[i])
-            res["control_{i}_percent_long".format(i=i)] = percentage_long[i]
-        for k in range(num_treatment):
-            i = k + num_control
-            res["treatment_{i}_coverage_long".format(i=k)] = float(long_coverage_vector[i])
-            res["treatment_{i}_coverage_short".format(i=k)] = float(short_coverage_vector[i])
-            res["treatment_{i}_percent_long".format(i=k)] = percentage_long[i]
-        control_mean_percent = np.mean(np.array(percentage_long[:num_control]))
-        treatment_mean_percent = np.mean(np.array(percentage_long[num_control:]))
-        res["chr"] = utr_d["chr"]
-        res["start"] = utr_d["start"]
-        res["end"] = utr_d["end"]
-        res["strand"] = utr_d["strand"]
-        if is_reverse:
-            breakpoint = utr_d["new_end"] - breakpoint
-        else:
-            breakpoint = utr_d["new_start"] + breakpoint
-        res["breakpoint"] = breakpoint
-        res["breakpoint_type"] = breakpoint_type
-        res["control_mean_percent"] = control_mean_percent
-        res["treatment_mean_percent"] = treatment_mean_percent
-        res["gene"] = utr
+    result = []
+    for breakpoint, abundance in zip(breakpoints, abundances):
+        res = {}
+        long_coverage_vector = abundance[0]
+        short_coverage_vector = abundance[1]
+        num_non_zero = sum((np.array(long_coverage_vector) + np.array(short_coverage_vector)) > 0)  # TODO: This introduces bias
+        if num_non_zero == num_samples:
+            percentage_long = []
+            for i in range(num_samples):
+                ratio = float(long_coverage_vector[i]) / (long_coverage_vector[i] + short_coverage_vector[i])  # long 3'UTR percentage
+                percentage_long.append(ratio)
+            for i in range(num_control):
+                res["control_{i}_coverage_long".format(i=i)] = float(long_coverage_vector[i])
+                res["control_{i}_coverage_short".format(i=i)] = float(short_coverage_vector[i])
+                res["control_{i}_percent_long".format(i=i)] = percentage_long[i]
+            for k in range(num_treatment):
+                i = k + num_control
+                res["treatment_{i}_coverage_long".format(i=k)] = float(long_coverage_vector[i])
+                res["treatment_{i}_coverage_short".format(i=k)] = float(short_coverage_vector[i])
+                res["treatment_{i}_percent_long".format(i=k)] = percentage_long[i]
+            control_mean_percent = np.mean(np.array(percentage_long[:num_control]))
+            treatment_mean_percent = np.mean(np.array(percentage_long[num_control:]))
+            res["chr"] = utr_d["chr"]
+            res["start"] = utr_d["start"]
+            res["end"] = utr_d["end"]
+            res["strand"] = utr_d["strand"]
+            if is_reverse:
+                breakpoint = utr_d["new_end"] - breakpoint
+            else:
+                breakpoint = utr_d["new_start"] + breakpoint
+            res["breakpoint"] = breakpoint
+            res["breakpoint_type"] = breakpoint_type
+            res["control_mean_percent"] = control_mean_percent
+            res["treatment_mean_percent"] = treatment_mean_percent
+            res["gene"] = utr
+            result.append(res)
+    return result
 
 
 def optimize_breakpoint(utr_coverage, UTR_start, UTR_end, coverage_weigths, search_start, coverage_threshold, num_control):
@@ -263,35 +266,40 @@ def optimize_breakpoint(utr_coverage, UTR_start, UTR_end, coverage_weigths, sear
     We are searching for a point within the UTR that minimizes the mean squared error, if the coverage vector was divided
     at that point. utr_coverage is a list with items corresponding to numpy arrays of coverage for a sample.
     """
-    search_point_end = int(abs((UTR_end - UTR_start)) * 0.1)  # TODO: This is 10% of total UTR end. Why?
+    #search_point_end = int(abs((UTR_end - UTR_start)) * 0.1)  # TODO: This is 10% of total UTR end. Why?
+    search_point_end = UTR_end-UTR_start
     num_samples = len(utr_coverage)
     normalized_utr_coverage = np.array([coverage/ coverage_weigths[i] for i, coverage in enumerate( utr_coverage.values() )])
     start_coverage = [np.mean(coverage[0:99]) for coverage in utr_coverage.values()]  # filters threshold on mean coverage over first 100 nt
     is_above_threshold = sum(np.array(start_coverage) >= coverage_threshold) >= num_samples  # This filters on the raw threshold. Why?
     is_above_length = UTR_end - UTR_start >= 150
     if (is_above_threshold) and (is_above_length):
-        search_end = UTR_end - UTR_start - search_point_end
+        search_end = UTR_end - UTR_start # - search_point_end
         breakpoints = range(search_start, search_end + 1)
         mse_list = [ estimate_mse(normalized_utr_coverage, bp, num_samples, num_control) for bp in breakpoints ]
         if len(mse_list) > 0:
-            return mse_to_breakpoint(mse_list, normalized_utr_coverage, breakpoints, num_samples)
+            return mse_to_breakpoint(mse_list, normalized_utr_coverage, num_samples)
     return False, False, False, False
 
 
-def mse_to_breakpoint(mse_list, normalized_utr_coverage, breakpoints, num_samples):
+def mse_to_breakpoint(mse_list, normalized_utr_coverage, num_samples):
     """
-    Take in mse_list with control and treatment mse and return breakpoint and utr abundance
+    Take in mse_list with control and treatment mse and return breakpoint and utr abundance for all local minima
+    in mse_list
     """
-    mse_control = [mse[0] for mse in mse_list]
-    mse_treatment = [mse[1] for mse in mse_list]
-    control_index = mse_control.index(min(mse_control))
-    treatment_index = mse_treatment.index(min(mse_treatment))
-    control_breakpoint = breakpoints[control_index]
-    treatment_breakpoint = breakpoints[treatment_index]
-    control_abundance = estimate_abundance(normalized_utr_coverage, control_breakpoint, num_samples)
-    treatment_abundance = estimate_abundance(normalized_utr_coverage, treatment_breakpoint, num_samples)
-    return control_breakpoint, control_abundance, treatment_breakpoint, treatment_abundance
+    mse_control = np.array([mse[0] for mse in mse_list])
+    mse_treatment = np.array([mse[1] for mse in mse_list])
+    control_breakpoints = list(get_minima(mse_control))
+    treatment_breakpoints = list(get_minima(mse_treatment))
+    control_abundances = [estimate_abundance(normalized_utr_coverage, bp, num_samples) for bp in control_breakpoints]
+    treatment_abundances = [estimate_abundance(normalized_utr_coverage, bp, num_samples) for bp in treatment_breakpoints]
+    return control_breakpoints, control_abundances, treatment_breakpoints, treatment_abundances
 
+def get_minima(a):
+    """
+    get minima for numpy array a
+    """
+    return np.where(np.r_[True, a[1:] < a[:-1]] & np.r_[a[:-1] < a[1:], True])[0]
 
 def estimate_mse(cov, bp, num_samples, num_control):
     """
