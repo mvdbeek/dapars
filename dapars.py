@@ -33,7 +33,7 @@ def parse_args():
                         help="minimum coverage in each aligment to be considered for determining breakpoints")
     parser.add_argument("-b", "--breakpoint_bed", required=False, type=argparse.FileType('w'),
                         help="Write bedfile with coordinates of breakpoint positions to supplied path.")
-    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.4')
+    parser.add_argument("-v", "--version", action='version', version='%(prog)s 0.1.5')
     return parser.parse_args()
 
 
@@ -82,7 +82,7 @@ class UtrFinder():
         cmds = []
         for alignment_file in self.all_alignments:
             cmd = "sort -k1,1 -k2,2n tmp_bedfile.bed | "
-            cmd = cmd + "~/bin/bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
+            cmd = cmd + "bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
                         " cut -f 4,7,8 > coverage_file_{alignment_name}".format(
                 alignment_file = alignment_file, alignment_name= self.alignment_names[alignment_file] )
             cmds.append(cmd)
@@ -126,25 +126,6 @@ class UtrFinder():
                 if utr_d["new_start"] + 50 < utr_d["new_end"]:
                     utr_dict[gene] = utr_d
         return utr_dict
-
-    def get_utr_coverage(self):
-        """
-        Returns a dict:
-        { UTR : [coverage_aligment1, ...]}
-        """
-        utr_coverages = {}
-        for utr, utr_d in self.utr_dict.iteritems():
-            if utr_d["chr"] in self.available_chromosomes:
-                if utr_d["strand"] == "+":
-                    is_reverse = False
-                else:
-                    is_reverse = True
-                utr_coverage = []
-                for bam in self.all_alignments:
-                    bp_coverage = get_bp_coverage(bam, utr_d["chr"], utr_d["new_start"], utr_d["new_end"], is_reverse)
-                    utr_coverage.append(bp_coverage)
-                utr_coverages[utr] = utr_coverage
-        return utr_coverages
 
     def get_coverage_weights(self):
         """
@@ -228,8 +209,6 @@ def calculate_all_utr(utr_coverage, utr, utr_d, result_tuple_fields, coverage_we
         breakpoint_to_result(res_treatment, utr, utr_d, treatment_breakpoint, "treatment_breakpoint", treatment_abundance, is_reverse,
                              num_samples, num_control, num_treatment)
     return res_control, res_treatment
-
-
 
 
 def breakpoint_to_result(res, utr, utr_d, breakpoint, breakpoint_type,
