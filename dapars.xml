@@ -1,17 +1,16 @@
-<tool id="dapars" name="dapars" version="0.1.7">
+<tool id="dapars" name="dapars" version="0.2.0">
     <description>infer de-novo alternative polyadenylation from rna-seq</description>
     <requirements>
         <requirement type="package" version="1.9">numpy</requirement>
-        <requirement type="package" version="2.22">bedtools</requirement>
+        <requirement type="package" version="0.14">scipy</requirement>
+        <requirement type="package" version="1.4">matplotlib</requirement>
+        <requirement type="package" version="0.7.5">tabulate</requirement>
     </requirements>
     <stdio>
         <exit_code range="1:" />
     </stdio>
     <command interpreter="python"><![CDATA[
-        dapars.py -c
-        #for $c in $controls:
-            "$c"
-        #end for
+        dapars.py -c $controls
         -t
         #for $t in $treatments:
             "$t"
@@ -24,6 +23,10 @@
         #if $make_breakpoint:
             -b "$breakpoint_bed"
         #end if
+        #if $make_html:
+            -p "$html_file.files_path"
+            -html "$html_file"
+        #end if
     ]]></command>
     <inputs>
         <param type="data" name="utr" format="gtf" label="GFF file containing 3prime UTRs" help="featureType of the UTRs
@@ -33,20 +36,26 @@
         <param type="integer" name="search_start" value="100" optional="False" min="1" label="Search start" help="Search start in nucleotides downstream of the start of the UTR. Necessary to correct for proximal drops in coverage. Select 200 for humans. Genomes with short UTRs may require more prpximal search start points."/>
         <param type="float" name="coverage_threshold" value="20" optional="False" label="Coverage threshold" help="Skip the analysis of UTRs whose mean coverage is below the Coverage Threshold in any of the alignment files."/>
         <param name="make_breakpoint" type="boolean" checked="False" label="Output bedfile with breakpoint positions?"/>
+        <param name="make_html" type="boolean" checked="False" label="Output HTML table with plot for every UTR?"/>
     </inputs>
     <outputs>
         <data name="apa_sites" format="tabular" />
         <data name="breakpoint_bed" format="bed6">
             <filter>(make_breakpoint == True)</filter>
         </data>
+        <data name="html_file" format="html">
+            <filter>(make_html == True)</filter>
+        </data>
     </outputs>
     <tests>
         <test>
             <param name="utr" value="example.gtf"></param>
             <param name="controls" value="c1.bam,c2.bam,c3.bam"></param>
-            <param name="treatments" value="t1.bam,t2.bam"></param>
+            <param name="treatments" value="t1.bam,t2.bam,t3.bam"></param>
             <param name="coverage_threshold" value="5"></param>
+            <param name="search_start" value="1"></param>
             <param name="make_breakpoint" value="True"></param>
+            <param name="make_html" value="True"></param>
             <output name="apa_sites" file="dapars.tab"></output>
             <output name="breakpoint_bed" file="breakpoint.bed"></output>
         </test>
