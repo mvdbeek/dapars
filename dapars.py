@@ -66,7 +66,7 @@ class UtrFinder():
         self.gtf_fields = filter_utr.get_gtf_fields()
         self.result_file = args.output_file
         self.all_alignments = self.control_alignments + self.treatment_alignments
-        self.alignment_names = { file: os.path.basename(file) for file in self.all_alignments }
+        self.alignment_names = OrderedDict(( file, os.path.basename(file)) for file in self.all_alignments )
         self.num_samples = len(self.all_alignments)
         self.utr_dict = self.get_utr_dict(0.2)
         self.dump_utr_dict_to_bedfile()
@@ -93,15 +93,13 @@ class UtrFinder():
         """
         Use bedtools coverage to generate pileup data for all alignment files for the regions specified in utr_dict.
         """
-        coverage_files = []
         cmds = []
         for alignment_file in self.all_alignments:
             cmd = "sort -k1,1 -k2,2n tmp_bedfile.bed | "
-            cmd = cmd + "bedtools coverage -d -s -abam {alignment_file} -b stdin |" \
+            cmd = cmd + "bedtools coverage -d -s -abam {alignment_file} -b tmp_bedfile.bed |" \
                         " cut -f 4,7,8 > coverage_file_{alignment_name}".format(
                 alignment_file = alignment_file, alignment_name= self.alignment_names[alignment_file] )
             cmds.append(cmd)
-        pool = Pool(self.n_cpus)
         subprocesses = [subprocess.Popen([cmd], shell=True) for cmd in cmds]
         [p.wait() for p in subprocesses]
         coverage_files = ["gene_position_coverage_{alignment_name}".format(
@@ -112,16 +110,16 @@ class UtrFinder():
         """
         Read coverages back in and store as dictionary of numpy arrays
         """
-        coverage_dict = { gene: { name: np.zeros(utr_d["new_end"]+1-utr_d["new_start"]) for name in self.alignment_names.itervalues() } for gene, utr_d in self.utr_dict.iteritems() }
-        for alignment_name in self.alignment_names.itervalues():
+        coverage_dict = { gene: [np.zeros(utr_d["new_end"]+1-utr_d["new_start"]) for name in self.alignment_names.values() ] for gene, utr_d in self.utr_dict.items() }
+        for i, alignment_name in enumerate(self.alignment_names.values()):
             with open("coverage_file_{alignment_name}".format(alignment_name = alignment_name)) as coverage_file:
                 for line in coverage_file:
                     gene, position, coverage= line.strip().split("\t")
-                    coverage_dict[gene][alignment_name][int(position)-1] = coverage
-        for utr_d in self.utr_dict.itervalues():
+                    coverage_dict[gene][i][int(position)-1] = coverage
+        for utr_d in self.utr_dict.values():
             if utr_d["strand"] == "-":
-                for alignment_name in self.alignment_names.values():
-                    coverage_dict[gene][alignment_name] = coverage_dict[gene][alignment_name][::-1]
+                for i, alignment_name in enumerate(self.alignment_names.values()):
+                    coverage_dict[gene][i] = coverage_dict[gene][i][::-1]
         return coverage_dict
 
     def get_utr_dict(self, shift):
@@ -154,7 +152,7 @@ class UtrFinder():
         coverage_per_alignment = []
         for utr in self.utr_coverages.itervalues():  # TODO: be smarter about this.
             utr_coverage = []
-            for vector in utr.itervalues():
+            for vector in utr:
                 utr_coverage.append(np.sum(vector))
             coverage_per_alignment.append(utr_coverage)
         coverages = np.array([ sum(x) for x in zip(*coverage_per_alignment) ])
@@ -186,6 +184,7 @@ class UtrFinder():
                   for utr, utr_d in self.utr_dict.iteritems() ]
         processed_tasks = [ pool.apply_async(calculate_all_utr, t) for t in tasks]
         result_list = [res.get() for res in processed_tasks]
+        #result_list = [calculate_all_utr(*t) for t in tasks]  # uncomment for easier debugging
         for res_control, res_treatment in result_list:
             if not res_control:
                 continue
@@ -282,8 +281,8 @@ def optimize_breakpoint(plot_path, utr, utr_coverage, UTR_start, UTR_end, covera
     at that point. utr_coverage is a list with items corresponding to numpy arrays of coverage for a sample.
     """
     num_samples = len(utr_coverage)
-    normalized_utr_coverage = np.array(utr_coverage.values())/np.expand_dims(coverage_weigths, axis=1)
-    start_coverage = [np.mean(coverage[0:99]) for coverage in utr_coverage.values()]  # filters threshold on mean coverage over first 100 nt
+    normalized_utr_coverage = np.array(utr_coverage)/np.expand_dims(coverage_weigths, axis=1)
+    start_coverage = [np.mean(coverage[0:99]) for coverage in utr_coverage]  # filters threshold on mean coverage over first 100 nt
     is_above_threshold = sum(np.array(start_coverage) >= coverage_threshold) >= num_samples  # This filters on the raw threshold. Why?
     is_above_length = UTR_end - UTR_start >= 150
     if (is_above_threshold) and (is_above_length):

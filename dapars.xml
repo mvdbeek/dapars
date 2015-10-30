@@ -1,8 +1,9 @@
-<tool id="dapars" name="dapars" version="0.2.0">
+<tool id="dapars" name="dapars" version="0.2.1">
     <description>infer de-novo alternative polyadenylation from rna-seq</description>
     <requirements>
         <requirement type="package" version="1.9">numpy</requirement>
         <requirement type="package" version="0.14">scipy</requirement>
+        <requirement type="package" version="1">matplotlib_1_4_runtime_dependencies</requirement>
         <requirement type="package" version="1.4">matplotlib</requirement>
         <requirement type="package" version="0.7.5">tabulate</requirement>
     </requirements>
@@ -10,10 +11,13 @@
         <exit_code range="1:" />
     </stdio>
     <command interpreter="python"><![CDATA[
-        dapars.py -c $controls
+        dapars.py -c
+        #for $control in $controls:
+            "$control"
+        #end for
         -t
-        #for $t in $treatments:
-            "$t"
+        #for $treatment in $treatments:
+            "$treatment"
         #end for
         -u "$utr" 
         -o "$apa_sites"
